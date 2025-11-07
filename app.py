@@ -131,13 +131,14 @@ Text:
 """
     try:
         resp = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You convert unstructured job adverts into structured JSON."},
                 {"role": "user", "content": prompt}
             ],
             temperature=0
         )
+        st.write("OpenAI Response received successfully")
     except Exception as e:
         st.error(f"OpenAI API error: {e}")
         return schema
@@ -199,17 +200,21 @@ if st.button("Extract from source"):
     else:
         with st.spinner("Extracting fields with OpenAI..."):
             extracted = call_openai_structurer(source_text, TARGET_SCHEMA)
+            st.write("Extracted data:", extracted)  # Debug output
 
-        st.session_state["schema"] = extracted
-        st.session_state["pending_fields"] = get_missing_fields(extracted)
-        st.session_state["current_field"] = None
-        st.success("Extracted what I could. Let's fill the rest.")
+            if isinstance(extracted, dict):
+                st.session_state["schema"] = extracted.copy()
+                st.session_state["pending_fields"] = get_missing_fields(extracted)
+                st.session_state["current_field"] = None
+                st.success("Extracted what I could. Let's fill the rest.")
+            else:
+                st.error("Failed to extract structured data. Please try again.")
 
 # --- conversational filling of blanks ---
 schema = st.session_state["schema"]
 pending = st.session_state["pending_fields"]
 
-if pending:
+if pending and ("schema" in st.session_state and any(st.session_state["schema"].values())):
     if st.session_state["current_field"] is None:
         st.session_state["current_field"] = pending[0]
 
@@ -230,9 +235,12 @@ if pending:
         st.session_state["schema"][field] = answer
         st.session_state["pending_fields"] = [f for f in pending if f != field]
         st.session_state["current_field"] = None
-        st.experimental_rerun()
-else:
-    st.success("All fields complete ✅")
-
+        st.rerun()
+elif "schema" in st.session_state and any(st.session_state["schema"].values()):
+    # Only show completion message if we have started the extraction process
+    # and all fields are actually complete
+    if all(st.session_state["schema"].values()):
+        st.success("All fields complete ✅")
+    
 st.subheader("Current schema")
 st.json(st.session_state["schema"])
