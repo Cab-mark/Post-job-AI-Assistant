@@ -58,62 +58,132 @@ url = st.text_input("Or provide a URL to the job advert")
 def extract_text_from_upload(uploaded_file):
     if uploaded_file is None:
         return ""
-    name = uploaded_file.name.lower()
-
-    # read bytes once
+        
     try:
-        data = uploaded_file.read()
-    except Exception:
-        # fallback to getvalue for some stream types
+        name = uploaded_file.name.lower()
+        st.info(f"Processing uploaded file: {name}")
+        
+        # Seek to start to ensure we can read the full file
+        if hasattr(uploaded_file, 'seek'):
+            uploaded_file.seek(0)
+        
+        # read bytes once
         try:
-            data = uploaded_file.getvalue()
-        except Exception:
-            return ""
-
-    if name.endswith(".txt"):
-        try:
-            return data.decode("utf-8", errors="ignore")
-        except Exception:
-            return data.decode("latin-1", errors="ignore")
-
-    if name.endswith(".docx"):
-        if not docx:
-            st.error("DOCX support not installed. Add python-docx to requirements.")
-            return ""
-        try:
-            document = docx.Document(BytesIO(data))
-            return "\n".join(p.text for p in document.paragraphs)
+            data = uploaded_file.read()
+            st.info(f"Successfully read {len(data)} bytes")
         except Exception as e:
-            st.error(f"Could not parse DOCX: {e}")
-            return ""
+            st.error(f"Error reading file: {str(e)}")
+            # fallback to getvalue for some stream types
+            try:
+                data = uploaded_file.getvalue()
+                st.info(f"Successfully read {len(data)} bytes using getvalue()")
+            except Exception as e:
+                st.error(f"Could not read file content: {str(e)}")
+                return ""
 
-    if name.endswith(".pdf"):
-        if not PdfReader:
-            st.error("PDF support not installed. Add pypdf to requirements.")
-            return ""
-        try:
-            reader = PdfReader(BytesIO(data))
-            return "\n".join((page.extract_text() or "") for page in reader.pages)
-        except Exception as e:
-            st.error(f"Could not parse PDF: {e}")
-            return ""
+        if name.endswith(".txt"):
+            try:
+                text = data.decode("utf-8", errors="ignore")
+                st.success(f"Successfully extracted {len(text)} characters from text file")
+                return text
+            except Exception:
+                text = data.decode("latin-1", errors="ignore")
+                st.success(f"Successfully extracted {len(text)} characters from text file (latin-1)")
+                return text
 
-    return ""
+        if name.endswith(".docx"):
+            if not docx:
+                st.error("DOCX support not installed. Please run: pip install python-docx")
+                return ""
+            try:
+                document = docx.Document(BytesIO(data))
+                text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
+                st.success(f"Successfully extracted {len(text)} characters from DOCX")
+                return text
+            except Exception as e:
+                st.error(f"Could not parse DOCX: {str(e)}")
+                return ""
+
+        if name.endswith(".pdf"):
+            if not PdfReader:
+                st.error("PDF support not installed. Please run: pip install pypdf")
+                return ""
+            try:
+                reader = PdfReader(BytesIO(data))
+                text_parts = []
+                for i, page in enumerate(reader.pages):
+                    page_text = page.extract_text()
+                    if page_text:
+                        text_parts.append(page_text)
+                        st.info(f"Extracted page {i+1}/{len(reader.pages)}")
+                
+                text = "\n".join(text_parts)
+                if text.strip():
+                    st.success(f"Successfully extracted {len(text)} characters from PDF")
+                    return text
+                else:
+                    st.error("PDF appears to be empty or unreadable")
+                    return ""
+            except Exception as e:
+                st.error(f"Could not parse PDF: {str(e)}")
+                return ""
+
+        st.error(f"Unsupported file type: {name}")
+        return ""
+        
+    except Exception as e:
+        st.error(f"Unexpected error processing file: {str(e)}")
+        return ""
 
 def extract_text_from_url(url: str) -> str:
     if not url:
         return ""
+        
+    # Add https:// if no protocol specified
+    if not url.startswith(('http://', 'https://')):
+        url = 'https://' + url
+        
     try:
-        res = requests.get(url, timeout=10)
+        st.info("Attempting to fetch URL...")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        res = requests.get(url, headers=headers, timeout=15, verify=True)
         res.raise_for_status()
+        
         soup = BeautifulSoup(res.text, "html.parser")
-        # remove scripts/styles then get visible text
-        for elem in soup(["script", "style", "noscript"]):
+        
+        # Remove unwanted elements
+        for elem in soup(["script", "style", "noscript", "header", "footer", "nav", "iframe"]):
             elem.decompose()
-        text = soup.get_text(separator="\n")
+        
+        # Try to find main content first
+        main_content = soup.find('main') or soup.find('article') or soup.find('div', {'class': ['content', 'main-content', 'job-description']}) or soup.body or soup
+        
+        # Get text with better formatting
+        text = main_content.get_text(separator="\n", strip=True)
+        
+        if not text.strip():
+            st.warning("No text content found on the page. Please check the URL.")
+            return ""
+            
+        st.success(f"Successfully extracted {len(text)} characters from URL")
         return text
+        
+    except requests.exceptions.SSLError:
+        st.error("Security certificate verification failed. Please check the URL.")
+        return ""
+    except requests.exceptions.ConnectionError:
+        st.error("Could not connect to the website. Please check the URL and your internet connection.")
+        return ""
+    except requests.exceptions.Timeout:
+        st.error("Request timed out. The website took too long to respond.")
+        return ""
+    except requests.exceptions.RequestException as e:
+        st.error(f"Error fetching URL: {str(e)}")
+        return ""
     except Exception as e:
-        st.error(f"Could not fetch URL: {e}")
+        st.error(f"Unexpected error: {str(e)}")
         return ""
 
 def call_openai_structurer(raw_text: str, schema: dict) -> dict:
