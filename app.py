@@ -1,6 +1,8 @@
 import json
 import os
 from io import BytesIO
+import re
+
 import streamlit as st
 from openai import OpenAI
 
@@ -18,19 +20,24 @@ try:
 except ImportError:
     PdfReader = None
 
+# --- OpenAI client ---
 client = OpenAI()
+
+# --- Streamlit page setup ---
+st.set_page_config(page_title="AI Job Schema Collector", page_icon="🧠")
+
+st.title("AI Job Schema Collector")
+st.write(
+    "Give me your job advert in **any format**. I’ll read it, pull out the Civil Service bits, "
+    "and ask only for what’s missing."
+)
+
+# Debug toggle (so only you see the noisy stuff)
+show_debug = st.toggle("Show debug info", value=False)
 
 # warn if API key not configured
 if not os.getenv("OPENAI_API_KEY"):
     st.warning("OPENAI_API_KEY not found in environment — OpenAI calls will fail until you set it.")
-
-st.set_page_config(page_title="AI Job Schema Collector", page_icon="🧠")
-st.title("AI Job Schema Collector")
-
-st.write(
-    "Start with **an upload**, **pasted text**, or **a URL** of a job advert. "
-    "I'll extract what I can, then ask you only for the missing bits."
-)
 
 # --- define the target schema (example) ---
 TARGET_SCHEMA = {
@@ -46,145 +53,130 @@ TARGET_SCHEMA = {
     "desirable_criteria": ""
 }
 
-# 1) FILE
-uploaded_file = st.file_uploader("Upload job advert (txt / docx / pdf)", type=["txt", "docx", "pdf"])
+# --- session setup ---
+if "schema" not in st.session_state:
+    st.session_state["schema"] = TARGET_SCHEMA.copy()
 
-# 2) PASTED TEXT
-pasted_text = st.text_area("Or paste the job advert text here", height=160)
+if "pending_fields" not in st.session_state:
+    st.session_state["pending_fields"] = list(TARGET_SCHEMA.keys())
 
-# 3) URL
-url = st.text_input("Or provide a URL to the job advert")
+if "current_field" not in st.session_state:
+    st.session_state["current_field"] = None
 
+if "extracted" not in st.session_state:
+    st.session_state["extracted"] = False
+
+if "detected_source" not in st.session_state:
+    st.session_state["detected_source"] = None
+
+
+# -------------------------
+# helper functions
+# -------------------------
 def extract_text_from_upload(uploaded_file):
     if uploaded_file is None:
         return ""
-        
+    name = uploaded_file.name.lower()
+
+    # read bytes once
     try:
-        name = uploaded_file.name.lower()
-        st.info(f"Processing uploaded file: {name}")
-        
-        # Seek to start to ensure we can read the full file
-        if hasattr(uploaded_file, 'seek'):
-            uploaded_file.seek(0)
-        
-        # read bytes once
+        data = uploaded_file.read()
+    except Exception:
         try:
-            data = uploaded_file.read()
-            st.info(f"Successfully read {len(data)} bytes")
+            data = uploaded_file.getvalue()
+        except Exception:
+            return ""
+
+    if name.endswith(".txt"):
+        try:
+            return data.decode("utf-8", errors="ignore")
+        except Exception:
+            return data.decode("latin-1", errors="ignore")
+
+    if name.endswith(".docx"):
+        if not docx:
+            st.error("DOCX support not installed. Add python-docx to requirements.")
+            return ""
+        try:
+            document = docx.Document(BytesIO(data))
+            return "\n".join(p.text for p in document.paragraphs)
         except Exception as e:
-            st.error(f"Error reading file: {str(e)}")
-            # fallback to getvalue for some stream types
-            try:
-                data = uploaded_file.getvalue()
-                st.info(f"Successfully read {len(data)} bytes using getvalue()")
-            except Exception as e:
-                st.error(f"Could not read file content: {str(e)}")
-                return ""
+            st.error(f"Could not parse DOCX: {e}")
+            return ""
 
-        if name.endswith(".txt"):
-            try:
-                text = data.decode("utf-8", errors="ignore")
-                st.success(f"Successfully extracted {len(text)} characters from text file")
-                return text
-            except Exception:
-                text = data.decode("latin-1", errors="ignore")
-                st.success(f"Successfully extracted {len(text)} characters from text file (latin-1)")
-                return text
+    if name.endswith(".pdf"):
+        if not PdfReader:
+            st.error("PDF support not installed. Add pypdf to requirements.")
+            return ""
+        try:
+            reader = PdfReader(BytesIO(data))
+            return "\n".join((page.extract_text() or "") for page in reader.pages)
+        except Exception as e:
+            st.error(f"Could not parse PDF: {e}")
+            return ""
 
-        if name.endswith(".docx"):
-            if not docx:
-                st.error("DOCX support not installed. Please run: pip install python-docx")
-                return ""
-            try:
-                document = docx.Document(BytesIO(data))
-                text = "\n".join(p.text for p in document.paragraphs if p.text.strip())
-                st.success(f"Successfully extracted {len(text)} characters from DOCX")
-                return text
-            except Exception as e:
-                st.error(f"Could not parse DOCX: {str(e)}")
-                return ""
+    return ""
 
-        if name.endswith(".pdf"):
-            if not PdfReader:
-                st.error("PDF support not installed. Please run: pip install pypdf")
-                return ""
-            try:
-                reader = PdfReader(BytesIO(data))
-                text_parts = []
-                for i, page in enumerate(reader.pages):
-                    page_text = page.extract_text()
-                    if page_text:
-                        text_parts.append(page_text)
-                        st.info(f"Extracted page {i+1}/{len(reader.pages)}")
-                
-                text = "\n".join(text_parts)
-                if text.strip():
-                    st.success(f"Successfully extracted {len(text)} characters from PDF")
-                    return text
-                else:
-                    st.error("PDF appears to be empty or unreadable")
-                    return ""
-            except Exception as e:
-                st.error(f"Could not parse PDF: {str(e)}")
-                return ""
-
-        st.error(f"Unsupported file type: {name}")
-        return ""
-        
-    except Exception as e:
-        st.error(f"Unexpected error processing file: {str(e)}")
-        return ""
 
 def extract_text_from_url(url: str) -> str:
     if not url:
         return ""
-        
-    # Add https:// if no protocol specified
+
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
-        
+
     try:
-        st.info("Attempting to fetch URL...")
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+                ' AppleWebKit/537.36 (KHTML, like Gecko)'
+                ' Chrome/91.0.4472.124 Safari/537.36'
+            )
         }
-        res = requests.get(url, headers=headers, timeout=15, verify=True)
+        res = requests.get(url, timeout=10, headers=headers, verify=True)
         res.raise_for_status()
-        
+
+        if show_debug:
+            st.write(f"Response status code: {res.status_code}")
+            st.write(f"Response content type: {res.headers.get('content-type', 'unknown')}")
+
         soup = BeautifulSoup(res.text, "html.parser")
-        
-        # Remove unwanted elements
-        for elem in soup(["script", "style", "noscript", "header", "footer", "nav", "iframe"]):
+
+        # remove unwanted elements
+        for elem in soup(["script", "style", "noscript", "header", "footer", "nav"]):
             elem.decompose()
-        
-        # Try to find main content first
-        main_content = soup.find('main') or soup.find('article') or soup.find('div', {'class': ['content', 'main-content', 'job-description']}) or soup.body or soup
-        
-        # Get text with better formatting
+
+        main_content = (
+            soup.find('main') or
+            soup.find('article') or
+            soup.find('div', class_='content') or
+            soup
+        )
+
         text = main_content.get_text(separator="\n", strip=True)
-        
-        if not text.strip():
-            st.warning("No text content found on the page. Please check the URL.")
-            return ""
-            
-        st.success(f"Successfully extracted {len(text)} characters from URL")
+
+        if not text:
+            st.warning("No text was extracted from the page")
+        else:
+            if show_debug:
+                st.info(f"Successfully extracted {len(text)} characters of text")
+                st.write("Preview:", text[:100] + "...")
+
         return text
-        
-    except requests.exceptions.SSLError:
-        st.error("Security certificate verification failed. Please check the URL.")
+
+    except requests.exceptions.SSLError as e:
+        st.error(f"SSL Certificate Error: {e}")
         return ""
     except requests.exceptions.ConnectionError:
-        st.error("Could not connect to the website. Please check the URL and your internet connection.")
+        st.error("Connection error — check the URL and your connection.")
         return ""
     except requests.exceptions.Timeout:
-        st.error("Request timed out. The website took too long to respond.")
+        st.error("The request timed out.")
         return ""
     except requests.exceptions.RequestException as e:
-        st.error(f"Error fetching URL: {str(e)}")
+        st.error(f"Error fetching URL: {e}")
         return ""
-    except Exception as e:
-        st.error(f"Unexpected error: {str(e)}")
-        return ""
+
 
 def call_openai_structurer(raw_text: str, schema: dict) -> dict:
     schema_str = json.dumps(schema, indent=2)
@@ -208,12 +200,12 @@ Text:
             ],
             temperature=0
         )
-        st.write("OpenAI Response received successfully")
+        if show_debug:
+            st.write("OpenAI Response received successfully")
     except Exception as e:
         st.error(f"OpenAI API error: {e}")
         return schema
 
-    # robustly get the model's content
     raw_json = ""
     try:
         raw_json = resp.choices[0].message.content.strip()
@@ -224,93 +216,196 @@ Text:
             raw_json = ""
 
     if not raw_json:
-        # last resort: stringify whole response
         try:
             raw_json = json.dumps(resp)
         except Exception:
             return schema
 
+    # attempt to parse
     try:
         parsed = json.loads(raw_json)
         return parsed
     except Exception:
-        # if the model returns markdown-wrapped json, try to fix quickly
         cleaned = raw_json.strip("` \n")
         try:
             return json.loads(cleaned)
         except Exception:
             return schema
 
+
 def get_missing_fields(current_schema: dict):
     return [k for k, v in current_schema.items() if not v or not str(v).strip()]
 
-# --- session setup ---
-if "schema" not in st.session_state:
-    st.session_state["schema"] = TARGET_SCHEMA.copy()
 
-if "pending_fields" not in st.session_state:
-    st.session_state["pending_fields"] = list(TARGET_SCHEMA.keys())
+# -------------------------
+# Layout: 3 tabs
+# -------------------------
+tab1, tab2, tab3 = st.tabs(["1. Source", "2. Extract", "3. Complete"])
 
-if "current_field" not in st.session_state:
-    st.session_state["current_field"] = None
+# -------- TAB 1: SOURCE --------
+with tab1:
+    st.subheader("1. Provide the job advert")
 
-# --- trigger extraction ---
-if st.button("Extract from source"):
-    # priority: file > pasted > url
-    source_text = ""
-    if uploaded_file:
-        source_text = extract_text_from_upload(uploaded_file)
-    elif pasted_text.strip():
-        source_text = pasted_text.strip()
-    elif url.strip():
-        source_text = extract_text_from_url(url.strip())
+    source_type = st.radio(
+        "How do you want to start?",
+        ["Upload a file", "Paste text", "Use a URL"],
+        horizontal=True
+    )
 
-    if not source_text:
-        st.warning("Please upload, paste, or provide a URL first.")
+    uploaded_file = None
+    pasted_text = ""
+    url = ""
+
+    if source_type == "Upload a file":
+        uploaded_file = st.file_uploader("Upload job advert (.txt / .docx / .pdf)", type=["txt", "docx", "pdf"])
+    elif source_type == "Paste text":
+        pasted_text = st.text_area("Paste the job advert text here", height=160)
     else:
-        with st.spinner("Extracting fields with OpenAI..."):
-            extracted = call_openai_structurer(source_text, TARGET_SCHEMA)
-            st.write("Extracted data:", extracted)  # Debug output
+        url = st.text_input("Enter the URL to the job advert")
+
+    st.info("Once you’ve added a source, go to **2. Extract** and let the AI do the first pass.")
+
+
+# -------- TAB 2: EXTRACT --------
+with tab2:
+    st.subheader("2. Extract fields from the advert")
+
+    st.write("I’ll read your advert and populate as much of the schema as I can. Then we’ll fill in the gaps.")
+
+    if st.button("Extract from source"):
+        # work out which source actually has content
+        source_text = ""
+        detected_source = None
+
+        if source_type == "Upload a file" and uploaded_file:
+            source_text = extract_text_from_upload(uploaded_file)
+            detected_source = "file"
+        elif source_type == "Paste text" and pasted_text.strip():
+            source_text = pasted_text.strip()
+            detected_source = "pasted text"
+        elif source_type == "Use a URL" and url.strip():
+            source_text = extract_text_from_url(url.strip())
+            detected_source = "URL"
+
+        if not source_text:
+            st.warning("Please provide a source in tab 1 first.")
+        else:
+            with st.spinner("Extracting fields with OpenAI..."):
+                extracted = call_openai_structurer(source_text, TARGET_SCHEMA)
 
             if isinstance(extracted, dict):
                 st.session_state["schema"] = extracted.copy()
-                st.session_state["pending_fields"] = get_missing_fields(extracted)
+                missing_fields = get_missing_fields(extracted)
+                st.session_state["pending_fields"] = missing_fields
                 st.session_state["current_field"] = None
-                st.success("Extracted what I could. Let's fill the rest.")
+                st.session_state["extracted"] = True
+                st.session_state["detected_source"] = detected_source
+
+                if missing_fields:
+                    st.success("Extracted what I could. Head to **3. Complete** to fill in the rest.")
+                else:
+                    st.success("Successfully extracted all fields! ✅ You can view/download them in **3. Complete**.")
             else:
                 st.error("Failed to extract structured data. Please try again.")
 
-# --- conversational filling of blanks ---
-schema = st.session_state["schema"]
-pending = st.session_state["pending_fields"]
+    # show detected source (if we have one)
+    if st.session_state.get("detected_source"):
+        st.caption(f"Detected source: {st.session_state['detected_source']}")
 
-if pending and ("schema" in st.session_state and any(st.session_state["schema"].values())):
-    if st.session_state["current_field"] is None:
-        st.session_state["current_field"] = pending[0]
 
-    field = st.session_state["current_field"]
-    pretty_label = field.replace("_", " ").title()
+# -------- TAB 3: COMPLETE --------
+with tab3:
+    st.subheader("3. Complete any missing fields")
 
-    st.subheader("Missing information")
-    hint = ""
-    if field == "closing_date":
-        hint = " (format: YYYY-MM-DD)"
-    if field == "salary":
-        hint = " (e.g. £38,000 - £44,000 national)"
+    schema = st.session_state["schema"]
+    pending = st.session_state["pending_fields"]
 
-    user_input = st.text_input(f"{pretty_label}{hint}:", key=f"input_{field}")
+    if not st.session_state["extracted"]:
+        st.info("Run the extraction in **2. Extract** first.")
+    else:
+        # Progress bar
+        total = len(TARGET_SCHEMA)
+        done = sum(1 for v in schema.values() if v and str(v).strip())
+        st.progress(done / total)
+        st.caption(f"{done} of {total} fields completed")
 
-    if st.button("Save this field"):
-        answer = user_input.strip()
-        st.session_state["schema"][field] = answer
-        st.session_state["pending_fields"] = [f for f in pending if f != field]
-        st.session_state["current_field"] = None
-        st.rerun()
-elif "schema" in st.session_state and any(st.session_state["schema"].values()):
-    # Only show completion message if we have started the extraction process
-    # and all fields are actually complete
-    if all(st.session_state["schema"].values()):
-        st.success("All fields complete ✅")
-    
-st.subheader("Current schema")
-st.json(st.session_state["schema"])
+        # ask for missing info
+        if pending and any(schema.values()):
+            if st.session_state["current_field"] is None:
+                st.session_state["current_field"] = pending[0]
+
+            field = st.session_state["current_field"]
+            pretty_label = field.replace("_", " ").title()
+
+            st.info(f"I couldn’t find **{pretty_label}** — can you add it?")
+
+            hint = ""
+            if field == "closing_date":
+                hint = " (format: YYYY-MM-DD)"
+            if field == "salary":
+                hint = " (e.g. £38,000 - £44,000 national)"
+
+            user_input = st.text_input(f"{pretty_label}{hint}:", key=f"input_{field}")
+
+            if st.button("Save this field"):
+                answer = user_input.strip()
+
+                # simple validation for closing_date
+                if field == "closing_date" and answer:
+                    if not re.match(r"^\d{4}-\d{2}-\d{2}$", answer):
+                        st.warning("Please use format YYYY-MM-DD, e.g. 2025-11-07")
+                    else:
+                        st.session_state["schema"][field] = answer
+                        st.session_state["pending_fields"] = [f for f in pending if f != field]
+                        st.session_state["current_field"] = None
+                        st.rerun()
+                else:
+                    st.session_state["schema"][field] = answer
+                    st.session_state["pending_fields"] = [f for f in pending if f != field]
+                    st.session_state["current_field"] = None
+                    st.rerun()
+        else:
+            # All done
+            if all(schema.values()):
+                st.success("All fields complete ✅")
+            else:
+                st.success("No more obvious missing fields. You can still edit below.")
+
+        # show grouped schema (friendlier than raw JSON)
+        st.markdown("### Current job data")
+
+        with st.expander("Job basics", expanded=True):
+            st.write({
+                "job_title": schema.get("job_title", ""),
+                "department": schema.get("department", ""),
+                "location": schema.get("location", ""),
+                "grade": schema.get("grade", ""),
+                "salary": schema.get("salary", "")
+            })
+
+        with st.expander("Dates"):
+            st.write({"closing_date": schema.get("closing_date", "")})
+
+        with st.expander("Content"):
+            st.write({
+                "summary": schema.get("summary", ""),
+                "responsibilities": schema.get("responsibilities", "")
+            })
+
+        with st.expander("Criteria"):
+            st.write({
+                "essential_criteria": schema.get("essential_criteria", ""),
+                "desirable_criteria": schema.get("desirable_criteria", "")
+            })
+
+        with st.expander("Raw JSON (for integrations)"):
+            st.json(schema)
+
+        # download button when we have at least some data
+        if any(schema.values()):
+            st.download_button(
+                "Download JSON",
+                data=json.dumps(schema, indent=2),
+                file_name="job-schema.json",
+                mime="application/json"
+            )
