@@ -329,7 +329,7 @@ with tab3:
         st.progress(done / total)
         st.caption(f"{done} of {total} fields completed")
 
-        # ask for missing info
+        # ---------- A) Wizard-style: fill the next missing field ----------
         if pending and any(schema.values()):
             if st.session_state["current_field"] is None:
                 st.session_state["current_field"] = pending[0]
@@ -337,6 +337,7 @@ with tab3:
             field = st.session_state["current_field"]
             pretty_label = field.replace("_", " ").title()
 
+            st.markdown("#### Quick fix")
             st.info(f"I couldn’t find **{pretty_label}** — can you add it?")
 
             hint = ""
@@ -352,6 +353,7 @@ with tab3:
 
                 # simple validation for closing_date
                 if field == "closing_date" and answer:
+                    import re
                     if not re.match(r"^\d{4}-\d{2}-\d{2}$", answer):
                         st.warning("Please use format YYYY-MM-DD, e.g. 2025-11-07")
                     else:
@@ -365,47 +367,59 @@ with tab3:
                     st.session_state["current_field"] = None
                     st.rerun()
         else:
-            # All done
             if all(schema.values()):
                 st.success("All fields complete ✅")
             else:
                 st.success("No more obvious missing fields. You can still edit below.")
 
-        # show grouped schema (friendlier than raw JSON)
+        # ---------- B) Form-style: edit everything ----------
+        st.markdown("#### Edit all fields")
+        with st.form("full_edit_form"):
+            job_title = st.text_input("Job title", value=schema.get("job_title", ""))
+            department = st.text_input("Department", value=schema.get("department", ""))
+            location = st.text_input("Location", value=schema.get("location", ""))
+            salary = st.text_input("Salary", value=schema.get("salary", ""))
+            grade = st.text_input("Grade", value=schema.get("grade", ""))
+            closing_date = st.text_input("Closing date (YYYY-MM-DD)", value=schema.get("closing_date", ""))
+            summary = st.text_area("Summary", value=schema.get("summary", ""), height=80)
+            responsibilities = st.text_area("Responsibilities", value=schema.get("responsibilities", ""), height=120)
+            essential_criteria = st.text_area("Essential criteria", value=schema.get("essential_criteria", ""), height=120)
+            desirable_criteria = st.text_area("Desirable criteria", value=schema.get("desirable_criteria", ""), height=120)
+
+            submitted = st.form_submit_button("Save all")
+
+        if submitted:
+            # update schema from form
+            updated_schema = {
+                "job_title": job_title,
+                "department": department,
+                "location": location,
+                "salary": salary,
+                "grade": grade,
+                "closing_date": closing_date,
+                "summary": summary,
+                "responsibilities": responsibilities,
+                "essential_criteria": essential_criteria,
+                "desirable_criteria": desirable_criteria,
+            }
+            st.session_state["schema"] = updated_schema
+            # recompute pending fields
+            st.session_state["pending_fields"] = [
+                k for k, v in updated_schema.items() if not v or not str(v).strip()
+            ]
+            st.session_state["current_field"] = None
+            st.success("All changes saved.")
+            st.rerun()
+
+        # ---------- C) Display current data + download ----------
         st.markdown("### Current job data")
+        with st.expander("Raw JSON"):
+            st.json(st.session_state["schema"])
 
-        with st.expander("Job basics", expanded=True):
-            st.write({
-                "job_title": schema.get("job_title", ""),
-                "department": schema.get("department", ""),
-                "location": schema.get("location", ""),
-                "grade": schema.get("grade", ""),
-                "salary": schema.get("salary", "")
-            })
-
-        with st.expander("Dates"):
-            st.write({"closing_date": schema.get("closing_date", "")})
-
-        with st.expander("Content"):
-            st.write({
-                "summary": schema.get("summary", ""),
-                "responsibilities": schema.get("responsibilities", "")
-            })
-
-        with st.expander("Criteria"):
-            st.write({
-                "essential_criteria": schema.get("essential_criteria", ""),
-                "desirable_criteria": schema.get("desirable_criteria", "")
-            })
-
-        with st.expander("Raw JSON (for integrations)"):
-            st.json(schema)
-
-        # download button when we have at least some data
-        if any(schema.values()):
+        if any(st.session_state["schema"].values()):
             st.download_button(
                 "Download JSON",
-                data=json.dumps(schema, indent=2),
+                data=json.dumps(st.session_state["schema"], indent=2),
                 file_name="job-schema.json",
                 mime="application/json"
             )
