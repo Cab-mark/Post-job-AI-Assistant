@@ -267,7 +267,7 @@ Text:
 # --------------------------
 
 st.title("Job advert optimiser (mock)")
-st.info('The hub could provide a front-end for JAO and could (if user rolepermits) enable publishing to the future Civil Service Jobs board.', icon="ℹ️")
+st.info('The hub could provide a front-end for JAO and could (if users role permits) enable publishing to the future Civil Service Jobs board.', icon="ℹ️")
 st.write(
     "Give me your job advert in **any format**. I’ll read it, work with you to improve it, and ask for missing information."
 )
