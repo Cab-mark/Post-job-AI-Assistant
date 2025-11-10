@@ -10,6 +10,7 @@ st.set_page_config(page_title="Recruitment hub - Interview question generator", 
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 st.title("Interview question generator (mock)")
+st.info('We could extend the hub to include other AI capabilities like a interview question generator.', icon="ℹ️")
 st.caption("Answer a few structured questions and I'll draft suitable interview questions.")
 
 # The structured steps we want the AI “agent” to ask

@@ -6,6 +6,8 @@ st.set_page_config(page_title="Recruitment hub - Home", layout="wide")
 
 st.title("Recruitment hub (mock)")
 
+st.info('The hub (lightweight UI) could provide reporting services like this via a GRID data connection or by talking to the future Civil Service Jobs APIs.', icon="ℹ️")
+
 # ----------------------------------
 # 1. Mock data
 # ----------------------------------
