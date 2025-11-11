@@ -1,4 +1,6 @@
 # pages/1_Dashboard.py
+from password_gate import require_password
+require_password()
 import streamlit as st
 import pandas as pd
 

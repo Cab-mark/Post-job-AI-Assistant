@@ -1,3 +1,5 @@
+from password_gate import require_password
+require_password()
 import json
 import os
 import re

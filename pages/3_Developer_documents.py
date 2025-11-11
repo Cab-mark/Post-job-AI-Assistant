@@ -1,7 +1,9 @@
+from password_gate import require_password
+require_password()
 import streamlit as st
 
 
-st.set_page_config(page_title="Developer documents", page_icon="🧩")
+st.set_page_config(page_title="Recruitment hub - Developer documents", page_icon="🧩")
 
 st.title("Developer documents (mock)")
 

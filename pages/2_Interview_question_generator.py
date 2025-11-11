@@ -1,4 +1,6 @@
 # pages/03_Interview_Question_Generator.py
+from password_gate import require_password
+require_password()
 import os
 import streamlit as st
 from openai import OpenAI
