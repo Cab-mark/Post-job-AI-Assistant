@@ -72,6 +72,11 @@ if "optimised" not in st.session_state:
     # holds AI-suggested versions, e.g. {"summary": "...better text..."}
     st.session_state["optimised"] = {}
 
+# NEW: Role setup
+if "user_role" not in st.session_state:
+    st.session_state["user_role"] = "Non-Advertiser"
+
+
 # --------------------------
 # UTILS
 # --------------------------
@@ -279,11 +284,26 @@ show_debug = st.toggle("Show debug info", value=False)
 if not os.getenv("OPENAI_API_KEY"):
     st.warning("OPENAI_API_KEY not found in environment — OpenAI calls will fail until you set it.")
 
-tab1, tab2, tab3 = st.tabs([
-    "1. Source",
-    "2. Optimise content",
-    "3. Review & complete"
-])
+# NEW: Role selection
+st.session_state["user_role"] = st.radio(
+    "Select your role:",
+    ["Advertiser", "Non-Advertiser"],
+    index=0 if st.session_state["user_role"] == "Advertiser" else 1,
+    horizontal=True,
+    help="Advertisers can access the 'Publish' tab."
+)
+is_advertiser = st.session_state["user_role"] == "Advertiser"
+
+# Dynamically set tabs
+tab_titles = ["1. Source", "2. Optimise content", "3. Review & complete"]
+if is_advertiser:
+    tab_titles.append("4. Publish")
+
+tab_objects = st.tabs(tab_titles)
+tab1, tab2, tab3 = tab_objects[:3]
+if is_advertiser:
+    tab4 = tab_objects[3]
+
 
 # --------------------------
 # TAB 1: SOURCE
@@ -358,7 +378,7 @@ with tab1:
 # TAB 2: OPTIMISE CONTENT
 # --------------------------
 with tab2:
-    st.subheader("3. Optimise content (optional)")
+    st.subheader("2. Optimise content (optional)")
 
     if not st.session_state["extracted"]:
         st.info("Run the extraction in the **Source** tab first.")
@@ -391,14 +411,14 @@ with tab2:
                         st.session_state["pending_fields"] = get_missing_fields(st.session_state["schema"])
                         st.rerun()
         else:
-            st.info("No AI suggestions yet. Click the button above, or add content in step 4 and it will auto-optimise.")
+            st.info("No AI suggestions yet. Click the button above, or add content in step 3 and it will auto-optimise.")
 
 
 # --------------------------
 # TAB 3: REVIEW & COMPLETE
 # --------------------------
 with tab3:
-    st.subheader("4. Review & complete")
+    st.subheader("3. Review & complete")
 
     schema = st.session_state["schema"]
     pending = st.session_state["pending_fields"]
@@ -520,3 +540,35 @@ with tab3:
                 file_name="job-schema.json",
                 mime="application/json"
             )
+
+# --------------------------
+# TAB 4: PUBLISH (Advertiser only)
+# --------------------------
+if is_advertiser:
+    with tab4:
+        st.subheader("4. Publish to Civil Service Jobs (Mock)")
+        
+        schema = st.session_state["schema"]
+        
+        # Check if all fields are complete
+        all_complete = all(v and str(v).strip() for v in schema.values())
+
+        if not all_complete:
+            st.warning("Please complete all fields in **Review & complete** before publishing.")
+            st.caption(f"Missing fields: {', '.join(get_missing_fields(schema)).replace('_', ' ').title()}")
+        else:
+            st.success("Job advert is complete and ready for mock publishing!")
+            st.info("This is a mock publish action. In a real application, this would send data to the Civil Service Jobs API.")
+            
+            st.markdown(f"**Job Title:** {schema.get('job_title')}")
+            st.markdown(f"**Department:** {schema.get('department')}")
+            
+            if st.button("Mock Publish to Civil Service Jobs 🚀"):
+                # Simulate API call and successful publishing
+                st.balloons()
+                st.success(f"**SUCCESS!** The job '{schema.get('job_title')}' has been mock-published!")
+                st.markdown("---")
+                st.markdown("### Mock Publishing Details")
+                st.write(f"**Job ID:** CSJ-MOCK-{abs(hash(json.dumps(schema))) % 100000}")
+                st.write(f"**Status:** Published on Civil Service Jobs")
+                st.caption("You can now return to the **Source** tab to start a new job.")
